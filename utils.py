@@ -1,30 +1,35 @@
-import math
-
-import altair as alt
-import pandas as pd
 import streamlit as st
+import math
+import pandas as pd
+import altair as alt
 
-SAMPLE_COLORS = ["#60a5fa", "#34d399", "#f59e0b", "#f472b6", "#a78bfa", "#f87171"]
+SAMPLE_COLORS = ["#60a5fa", "#34d399", "#f87171", "#c084fc", "#fbbf24", "#22d3ee"]
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-.stApp { background: #0f1117; color: #e5e7eb; }
-[data-testid="stSidebar"] { background: #161b27; }
-[data-testid="stSidebarNav"] a { color: #d1d5db !important; }
-.metric-tile { background: #1a2035; border: 1px solid #27314a; border-radius: 14px; padding: 12px 14px; }
-.metric-label { color: #93a4c3; font-size: 0.85rem; }
-.metric-value { color: #f9fafb; font-weight: 700; font-size: 1.3rem; }
-.sample-box { background: #1a0a0a; border-left: 5px solid #ef4444; color: #fca5a5; padding: 10px 12px; border-radius: 8px; font-family: 'JetBrains Mono', monospace; }
-.result-row { background: #121827; border: 1px solid #25314b; border-radius: 10px; padding: 10px; margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
-.prompt { color: #60a5fa; }
-.cont { color: #34d399; }
-.result-row.first { background: rgba(34, 197, 94, 0.10); border-color: #22c55e; }
-.pill { display: inline-block; margin: 4px 6px 4px 0; padding: 4px 10px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
-.stButton > button { background: linear-gradient(90deg, #3b82f6, #6366f1); color: white; border: none; border-radius: 10px; font-weight: 600; }
-.stButton > button:hover { opacity: 0.92; }
-.card { background: #161b27; border: 1px solid #27314a; border-radius: 14px; padding: 16px; }
+.stApp { background: #0f1117; color: #e2e8f0; }
+[data-testid="stSidebar"] { background: #161b27 !important; border-right: 1px solid #1e2535; }
+[data-testid="stSidebar"] * { color: #cbd5e1 !important; }
+.card { background: #161b27; border: 1px solid #1e2535; border-radius: 12px; padding: 20px 24px; margin-bottom: 16px; }
+.card-title { font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #64748b; margin-bottom: 14px; }
+.metric-tile { background: #1a2035; border: 1px solid #1e2d45; border-radius: 10px; padding: 12px 16px; text-align: center; }
+.metric-label { font-size: 10px; color: #64748b; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+.metric-value { font-size: 22px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #f1f5f9; }
+.sample-box { font-family: 'JetBrains Mono', monospace; font-size: 13px; background: #1a0a0a; border: 1px solid #7f1d1d; border-left: 4px solid #ef4444; border-radius: 8px; padding: 10px 16px; color: #fca5a5; margin-top: 4px; }
+.result-row { font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 7px 12px; border-radius: 8px; margin-bottom: 5px; border: 1px solid #1e2535; }
+.result-row.top { background: #0d1f12; border-color: #166534; }
+.result-row.rest { background: #161b27; }
+.stButton > button { border-radius: 8px !important; font-weight: 600 !important; letter-spacing: 0.5px !important; transition: all 0.2s !important; }
+.stButton > button[kind="primary"] { background: linear-gradient(135deg, #3b82f6, #6366f1) !important; border: none !important; color: white !important; }
+.stButton > button[kind="primary"]:hover { transform: translateY(-1px); box-shadow: 0 4px 20px #3b82f640 !important; }
+.stProgress > div > div { background: linear-gradient(90deg, #3b82f6, #6366f1) !important; border-radius: 4px; }
+hr { border-color: #1e2535 !important; }
+.vega-embed { background: transparent !important; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0f1117; }
+::-webkit-scrollbar-thumb { background: #1e2535; border-radius: 3px; }
 </style>
 """
 
@@ -34,70 +39,87 @@ def inject_css():
 
 
 def fmt_num(n):
-    n = float(n)
-    if abs(n) >= 1e9:
-        return f"{n / 1e9:.2f}G"
-    if abs(n) >= 1e6:
-        return f"{n / 1e6:.2f}M"
-    if abs(n) >= 1e3:
-        return f"{n / 1e3:.2f}K"
-    return f"{n:.0f}"
+    if n >= 1e9:
+        return f"{n/1e9:.1f}G"
+    if n >= 1e6:
+        return f"{n/1e6:.1f}M"
+    if n >= 1e3:
+        return f"{n/1e3:.0f}K"
+    return str(int(n))
 
 
 def param_count(cfg, vocab_size):
-    C = cfg["n_embd"]
-    T = cfg["block_size"]
-    L = cfg["n_layer"]
-    total = 0
-    total += vocab_size * C  # wte
-    total += T * C  # wpe
-    total += vocab_size * C  # lm_head
-    total += L * (4 * C * C)  # attn
-    total += L * ((4 * C) * C + C * (4 * C))  # mlp
-    return int(total)
+    E, L, B = cfg["n_embd"], cfg["n_layer"], cfg["block_size"]
+    return vocab_size * E + B * E + vocab_size * E + L * (4 * E * E * 4 + E * 4 * E)
 
 
 def metric_tile(label, value):
-    return f"<div class='metric-tile'><div class='metric-label'>{label}</div><div class='metric-value'>{value}</div></div>"
+    return (
+        f"<div class='metric-tile'>"
+        f"<div class='metric-label'>{label}</div>"
+        f"<div class='metric-value'>{value}</div></div>"
+    )
 
 
 def build_charts(loss_hist, time_hist):
-    if not loss_hist:
-        return alt.Chart(pd.DataFrame({"step": [], "loss": []})).mark_line()
+    steps = list(range(len(loss_hist)))
+    smoothed = pd.Series(loss_hist).ewm(alpha=0.05).mean().tolist()
+    cfg_alt = {
+        "background": "transparent",
+        "axis": {
+            "gridColor": "#1e2535",
+            "labelColor": "#64748b",
+            "titleColor": "#64748b",
+            "domainColor": "#1e2535",
+            "tickColor": "#1e2535",
+        },
+        "title": {"color": "#94a3b8", "fontSize": 11, "fontWeight": 600, "anchor": "start"},
+        "view": {"strokeWidth": 0},
+    }
 
     df = pd.DataFrame(
         {
-            "step": list(range(1, len(loss_hist) + 1)),
+            "step": steps,
             "loss": loss_hist,
-            "step_time": time_hist,
+            "smoothed": smoothed,
+            "perplexity": [math.exp(min(l, 20)) for l in loss_hist],
+            "ms": time_hist,
         }
     )
-    df["ppl"] = df["loss"].apply(lambda x: math.exp(min(20, x)))
-    df["loss_ema"] = df["loss"].ewm(alpha=0.2).mean()
 
-    base = alt.Chart(df).encode(x=alt.X("step:Q", title="Step"))
+    base = alt.Chart(df).encode(x=alt.X("step:Q", title="step"))
+    ms_bars = base.mark_bar(color="#22c55e", opacity=0.2, cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
+        y=alt.Y("ms:Q", title="ms/step", axis=alt.Axis(titleColor="#22c55e55", labelColor="#22c55e55"))
+    )
 
-    loss_area = base.mark_area(opacity=0.25, color="#60a5fa").encode(y=alt.Y("loss:Q", title="Loss"))
-    loss_line = base.mark_line(color="#3b82f6", strokeWidth=2).encode(y="loss_ema:Q")
-    bars = base.mark_bar(opacity=0.22, color="#22c55e").encode(y=alt.Y("step_time:Q", title="Step Time (s)"))
-    c1 = (
-        alt.layer(loss_area, loss_line, bars)
+    loss_chart = (
+        alt.layer(
+            ms_bars,
+            base.mark_area(color="#3b82f6", opacity=0.08).encode(y="loss:Q"),
+            base.mark_line(color="#3b82f6", opacity=0.3, strokeWidth=1).encode(y="loss:Q"),
+            base.mark_line(color="#60a5fa", strokeWidth=2.5).encode(
+                y=alt.Y("smoothed:Q", title="loss", axis=alt.Axis(titleColor="#60a5fa"))
+            ),
+        )
         .resolve_scale(y="independent")
-        .properties(title="Loss + Step Time", height=240)
+        .properties(height=150, title="Loss + Step Time")
     )
 
-    ppl_area = base.mark_area(opacity=0.25, color="#fb923c").encode(y=alt.Y("ppl:Q", title="Perplexity"))
-    ppl_line = base.mark_line(color="#f97316", strokeWidth=2).encode(y="ppl:Q")
-    bars2 = base.mark_bar(opacity=0.22, color="#22c55e").encode(y=alt.Y("step_time:Q", title="Step Time (s)"))
-    c2 = (
-        alt.layer(ppl_area, ppl_line, bars2)
+    ppl_chart = (
+        alt.layer(
+            ms_bars,
+            base.mark_area(color="#f97316", opacity=0.08).encode(y=alt.Y("perplexity:Q", scale=alt.Scale(zero=False))),
+            base.mark_line(color="#fb923c", strokeWidth=2.5).encode(
+                y=alt.Y(
+                    "perplexity:Q",
+                    title="exp(loss)",
+                    scale=alt.Scale(zero=False),
+                    axis=alt.Axis(titleColor="#fb923c"),
+                )
+            ),
+        )
         .resolve_scale(y="independent")
-        .properties(title="Perplexity exp(loss) + Step Time", height=240)
+        .properties(height=150, title="Perplexity exp(loss) + Step Time")
     )
 
-    return (
-        alt.vconcat(c1, c2)
-        .configure(background="transparent")
-        .configure_axis(gridColor="#1e2535", labelColor="#d1d5db", titleColor="#d1d5db")
-        .configure_title(color="#f3f4f6")
-    )
+    return alt.vconcat(loss_chart, ppl_chart).configure(**cfg_alt).configure_view(strokeWidth=0)
