@@ -18,7 +18,6 @@ if not st.session_state.get("trained"):
     )
 
 DATASETS = {
-    "English Words": ("datasets/words.txt", "10,000 common words"),
     "Pokémon Names": ("datasets/pokemon.txt", "150+ original Pokémon"),
     "Countries": ("datasets/countries.txt", "195 country names"),
     "Fruits": ("datasets/fruits.txt", "60+ fruit names"),
