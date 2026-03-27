@@ -1,343 +1,218 @@
-import math
-import random
-from typing import List
-
-import numpy as np
-
-
-class Value:
-    def __init__(self, data, _children=(), _op=""):
-        self.data = float(data)
-        self.grad = 0.0
-        self._backward = lambda: None
-        self._prev = set(_children)
-        self._op = _op
-
-    def __add__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
-        out = Value(self.data + other.data, (self, other), "+")
-
-        def _backward():
-            self.grad += out.grad
-            other.grad += out.grad
-
-        out._backward = _backward
-        return out
-
-    def __radd__(self, other):
-        return self + other
-
-    def __mul__(self, other):
-        other = other if isinstance(other, Value) else Value(other)
-        out = Value(self.data * other.data, (self, other), "*")
-
-        def _backward():
-            self.grad += other.data * out.grad
-            other.grad += self.data * out.grad
-
-        out._backward = _backward
-        return out
-
-    def __rmul__(self, other):
-        return self * other
-
-    def __pow__(self, other):
-        assert isinstance(other, (int, float))
-        out = Value(self.data**other, (self,), f"**{other}")
-
-        def _backward():
-            self.grad += (other * (self.data ** (other - 1))) * out.grad
-
-        out._backward = _backward
-        return out
-
-    def __truediv__(self, other):
-        return self * (other**-1)
-
-    def __neg__(self):
-        return self * -1
-
-    def __sub__(self, other):
-        return self + (-other)
-
-    def __rsub__(self, other):
-        return other + (-self)
-
-    def exp(self):
-        x = self.data
-        out = Value(math.exp(x), (self,), "exp")
-
-        def _backward():
-            self.grad += out.data * out.grad
-
-        out._backward = _backward
-        return out
-
-    def log(self):
-        out = Value(math.log(self.data + 1e-8), (self,), "log")
-
-        def _backward():
-            self.grad += (1.0 / (self.data + 1e-8)) * out.grad
-
-        out._backward = _backward
-        return out
-
-    def relu(self):
-        out = Value(0 if self.data < 0 else self.data, (self,), "ReLU")
-
-        def _backward():
-            self.grad += (out.data > 0) * out.grad
-
-        out._backward = _backward
-        return out
-
-    def backward(self):
-        topo = []
-        visited = set()
-
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._prev:
-                    build_topo(child)
-                topo.append(v)
-
-        build_topo(self)
-
-        self.grad = 1.0
-        for v in reversed(topo):
-            v._backward()
-
-
-def linear(x: List[Value], w: List[List[Value]]) -> List[Value]:
-    return [sum((wi * xi for wi, xi in zip(wrow, x)), Value(0.0)) for wrow in w]
-
-
-def softmax(logits: List[Value]) -> List[Value]:
-    max_logit = max(l.data for l in logits)
-    probs = [(l - max_logit).exp() for l in logits]
-    denom = sum(probs, Value(0.0))
-    return [p / denom for p in probs]
-
-
-def rmsnorm(x: List[Value]) -> List[Value]:
-    ss = sum((xi * xi for xi in x), Value(0.0)) / len(x)
-    scale = (ss + 1e-5) ** -0.5
-    return [xi * scale for xi in x]
-
-
-class MicroGPT:
-    def __init__(self, seed: int = 42):
-        self.rng_state = seed
-        self.docs = []
-        self.stoi = {}
-        self.itos = {}
-        self.BOS = 0
-        self.params = []
-        self.cfg = {}
-        self.initialized = False
-
-    def _seed(self, s: int):
-        self.rng_state = s
-
-    def _rand(self) -> float:
-        self.rng_state = (1664525 * self.rng_state + 1013904223) % (2**32)
-        return self.rng_state / (2**32)
-
-    def _gauss(self, mu=0.0, sigma=1.0):
-        u1 = max(self._rand(), 1e-8)
-        u2 = self._rand()
-        z0 = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
-        return mu + sigma * z0
-
-    def _sample(self, probs: List[float]):
-        r = self._rand()
-        cdf = 0.0
-        for i, p in enumerate(probs):
-            cdf += p
-            if r <= cdf:
-                return i
-        return len(probs) - 1
-
-    def load_dataset(self, text: str):
-        docs = [d.strip() for d in text.splitlines() if d.strip()]
-        random.Random(1337).shuffle(docs)
-        if not docs:
-            raise ValueError("Dataset is empty.")
-        uchars = sorted(set("".join(docs)))
-        self.stoi = {ch: i for i, ch in enumerate(uchars)}
-        self.itos = {i: ch for ch, i in self.stoi.items()}
-        self.BOS = len(uchars)
-        self.stoi["<BOS>"] = self.BOS
-        self.itos[self.BOS] = "<BOS>"
-        self.docs = docs
-        return {
-            "num_docs": len(docs),
-            "vocab_size": len(uchars),
-            "avg_len": float(np.mean([len(d) for d in docs])),
-            "max_len": int(np.max([len(d) for d in docs])),
-            "samples": docs[:6],
-        }
-
-    def _rand_matrix(self, rows, cols, scale=0.02):
-        return [[Value(self._gauss(0, scale)) for _ in range(cols)] for _ in range(rows)]
-
-    def init_model(self, cfg):
-        self.cfg = cfg
-        V = len(self.stoi)
-        C = cfg["n_embd"]
-        T = cfg["block_size"]
-        L = cfg["n_layer"]
-
-        self.wte = self._rand_matrix(V, C)
-        self.wpe = self._rand_matrix(T, C)
-        self.lm_head = self._rand_matrix(V, C)
-
-        self.attn_wq = [self._rand_matrix(C, C) for _ in range(L)]
-        self.attn_wk = [self._rand_matrix(C, C) for _ in range(L)]
-        self.attn_wv = [self._rand_matrix(C, C) for _ in range(L)]
-        self.attn_wo = [self._rand_matrix(C, C) for _ in range(L)]
-
-        self.mlp_fc1 = [self._rand_matrix(4 * C, C) for _ in range(L)]
-        self.mlp_fc2 = [self._rand_matrix(C, 4 * C) for _ in range(L)]
-
-        mats = [self.wte, self.wpe, self.lm_head]
-        for l in range(L):
-            mats += [
-                self.attn_wq[l],
-                self.attn_wk[l],
-                self.attn_wv[l],
-                self.attn_wo[l],
-                self.mlp_fc1[l],
-                self.mlp_fc2[l],
-            ]
-
-        self.params = [p for m in mats for row in m for p in row]
-        n = len(self.params)
-        self.m = np.zeros(n, dtype=np.float64)
-        self.v = np.zeros(n, dtype=np.float64)
-        self.initialized = True
-
-    def _forward(self, tok, pos, keys=None, vals=None):
-        C = self.cfg["n_embd"]
-        L = self.cfg["n_layer"]
-        n_head = self.cfg["n_head"]
-        head_dim = C // n_head
-        x = [self.wte[tok][i] + self.wpe[pos][i] for i in range(C)]
-
-        for l in range(L):
-            xn = rmsnorm(x)
-            q = linear(xn, self.attn_wq[l])
-            k = linear(xn, self.attn_wk[l])
-            v = linear(xn, self.attn_wv[l])
-
-            if keys is None:
-                k_cache = [[] for _ in range(L)]
-                v_cache = [[] for _ in range(L)]
-            else:
-                k_cache, v_cache = keys, vals
-            k_cache[l].append(k)
-            v_cache[l].append(v)
-
-            head_out = []
-            for h in range(n_head):
-                qs = q[h * head_dim : (h + 1) * head_dim]
-                scores = []
-                for t in range(len(k_cache[l])):
-                    ks = k_cache[l][t][h * head_dim : (h + 1) * head_dim]
-                    dot = sum((a * b for a, b in zip(qs, ks)), Value(0.0))
-                    scores.append(dot * (head_dim**-0.5))
-                probs = softmax(scores)
-                out = [Value(0.0) for _ in range(head_dim)]
-                for t, p in enumerate(probs):
-                    vs = v_cache[l][t][h * head_dim : (h + 1) * head_dim]
-                    out = [oi + p * vi for oi, vi in zip(out, vs)]
-                head_out.extend(out)
-
-            attn = linear(head_out, self.attn_wo[l])
-            x = [xi + ai for xi, ai in zip(x, attn)]
-
-            xn2 = rmsnorm(x)
-            h1 = [u.relu() for u in linear(xn2, self.mlp_fc1[l])]
-            h2 = linear(h1, self.mlp_fc2[l])
-            x = [xi + hi for xi, hi in zip(x, h2)]
-
-        xn = rmsnorm(x)
-        logits = linear(xn, self.lm_head)
-        return logits, k_cache, v_cache
-
-    def _encode_doc(self, doc):
-        return [self.BOS] + [self.stoi[ch] for ch in doc if ch in self.stoi]
-
-    def train_step(self, step, total_steps):
-        if not self.initialized:
-            raise RuntimeError("Model not initialized")
-
-        for p in self.params:
-            p.grad = 0.0
-
-        doc = self.docs[step % len(self.docs)]
-        toks = self._encode_doc(doc)
-        if len(toks) < 2:
-            return 0.0, doc
-
-        block = self.cfg["block_size"]
-        toks = toks[: block + 1]
-        xseq = toks[:-1]
-        yseq = toks[1:]
-
-        loss = Value(0.0)
-        keys = [[] for _ in range(self.cfg["n_layer"])]
-        vals = [[] for _ in range(self.cfg["n_layer"])]
-
-        for t, (xt, yt) in enumerate(zip(xseq, yseq)):
-            logits, keys, vals = self._forward(xt, t, keys, vals)
-            probs = softmax(logits)
-            loss = loss + (probs[yt].log() * -1.0)
-
-        loss = loss / max(1, len(xseq))
-        loss.backward()
-
-        lr = 0.01 * max(0.0, 1.0 - step / max(1, total_steps))
-        b1, b2 = 0.85, 0.99
-        eps = 1e-8
-        t = step + 1
-
-        for i, p in enumerate(self.params):
-            g = p.grad
-            self.m[i] = b1 * self.m[i] + (1 - b1) * g
-            self.v[i] = b2 * self.v[i] + (1 - b2) * (g * g)
-            m_hat = self.m[i] / (1 - (b1**t))
-            v_hat = self.v[i] / (1 - (b2**t))
-            p.data -= lr * m_hat / (math.sqrt(v_hat) + eps)
-
-        return float(loss.data), doc
-
-    def generate(self, prompt="", temperature=1.0, max_len=30):
-        if not self.initialized:
-            return ""
-        toks = [self.BOS] + [self.stoi[c] for c in prompt if c in self.stoi]
-        keys = [[] for _ in range(self.cfg["n_layer"])]
-        vals = [[] for _ in range(self.cfg["n_layer"])]
-
-        for t, tok in enumerate(toks):
-            logits, keys, vals = self._forward(tok, min(t, self.cfg["block_size"] - 1), keys, vals)
-
-        out = []
-        cur_logits = logits
-        for i in range(max_len):
-            scaled = [Value(l.data / max(temperature, 1e-4)) for l in cur_logits]
-            probs = softmax(scaled)
-            pvals = [p.data for p in probs]
-            nxt = self._sample(pvals)
-            if nxt == self.BOS:
-                break
-            out.append(self.itos.get(nxt, ""))
-            cur_logits, keys, vals = self._forward(
-                nxt,
-                min(len(toks) + i, self.cfg["block_size"] - 1),
-                keys,
-                vals,
-            )
-
-        return "".join(out)
+""" 
+microgpt.py — Karpathy's microgpt faithfully ported to Python. 
+No PyTorch/TF. Pure Python + math/numpy for Adam arrays only. 
+""" 
+import math 
+import numpy as np 
+
+# ── RNG ─────────────────────────────────────────────────────────────────────── 
+_rng = [42] 
+
+def _seed(s): _rng[0] = int(s) 
+
+def _rand(): 
+    _rng[0] = (_rng[0] * 1664525 + 1013904223) & 0xFFFFFFFF 
+    return _rng[0] / 0xFFFFFFFF 
+
+def _gauss(std): 
+    u1 = max(_rand(), 1e-10) 
+    return std * math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * _rand()) 
+
+def _sample(probs): 
+    r, c = np.random.random(), 0.0 
+    for i, p in enumerate(probs): 
+        c += p 
+        if r <= c: return i 
+    return len(probs) - 1 
+
+# ── Autograd ────────────────────────────────────────────────────────────────── 
+class Value: 
+    __slots__ = ('data', 'grad', '_ch', '_lg') 
+
+    def __init__(self, data, ch=(), lg=()): 
+        self.data = float(data); self.grad = 0.0 
+        self._ch = ch; self._lg = lg 
+
+    def __add__(self, o): 
+        o = o if isinstance(o, Value) else Value(o) 
+        return Value(self.data + o.data, (self, o), (1.0, 1.0)) 
+    __radd__ = __add__ 
+
+    def __mul__(self, o): 
+        o = o if isinstance(o, Value) else Value(o) 
+        return Value(self.data * o.data, (self, o), (o.data, self.data)) 
+    __rmul__ = __mul__ 
+
+    def __neg__(self): return self * -1 
+    def __sub__(self, o): return self + (o if isinstance(o, Value) else Value(o)).__neg__() 
+    def __truediv__(self, o): 
+        o = o if isinstance(o, Value) else Value(o) 
+        return self * o.pow(-1) 
+
+    def pow(self, n): 
+        return Value(self.data ** n, (self,), (n * self.data ** (n - 1),)) 
+    def log(self): 
+        d = max(self.data, 1e-10) 
+        return Value(math.log(d), (self,), (1.0 / d,)) 
+    def exp(self): 
+        v = math.exp(self.data); return Value(v, (self,), (v,)) 
+    def relu(self): 
+        return Value(max(0.0, self.data), (self,), (1.0 if self.data > 0 else 0.0,)) 
+
+    def backward(self): 
+        topo, seen = [], set() 
+        def build(v): 
+            if id(v) not in seen: 
+                seen.add(id(v)) 
+                for c in v._ch: build(c) 
+                topo.append(v) 
+        build(self); self.grad = 1.0 
+        for v in reversed(topo): 
+            for c, g in zip(v._ch, v._lg): 
+                c.grad += g * v.grad 
+
+# ── Helpers ─────────────────────────────────────────────────────────────────── 
+def linear(x, w): 
+    return [sum((w[i][j] * x[j] for j in range(len(x))), Value(0)) for i in range(len(w))] 
+
+def softmax(logits): 
+    mx = max(v.data for v in logits) 
+    exps = [(v - mx).exp() for v in logits] 
+    tot = sum(exps, Value(0)) 
+    return [e / tot for e in exps] 
+
+def rmsnorm(x): 
+    ms = sum((xi * xi for xi in x), Value(0)) / len(x) 
+    s = (ms + 1e-5).pow(-0.5) 
+    return [xi * s for xi in x] 
+
+# ── Model ───────────────────────────────────────────────────────────────────── 
+class MicroGPT: 
+    def __init__(self): 
+        self.sd = {}; self.params = [] 
+        self.adam_m = self.adam_v = None 
+        self.cfg = {}; self.uchars = []; self.BOS = 0 
+        self.vocab_size = 0; self.docs = [] 
+
+    def _mat(self, r, c, std=0.08): 
+        return [[Value(_gauss(std)) for _ in range(c)] for _ in range(r)] 
+
+    # ── Dataset ─────────────────────────────────────────────────────────────── 
+    def load_dataset(self, text, sep='\n'): 
+        self.docs = [l.strip() for l in text.strip().split(sep) if l.strip()] 
+        for i in range(len(self.docs) - 1, 0, -1): 
+            j = int(_rand() * (i + 1)) 
+            self.docs[i], self.docs[j] = self.docs[j], self.docs[i] 
+        self.uchars = sorted(set(ch for d in self.docs for ch in d)) 
+        self.BOS = len(self.uchars) 
+        self.vocab_size = self.BOS + 1 
+        return dict(vocab_size=self.vocab_size, num_docs=len(self.docs), 
+                chars=self.uchars, sample_docs=self.docs[:10]) 
+
+    # ── Init ────────────────────────────────────────────────────────────────── 
+    def init_model(self, cfg): 
+        self.cfg = dict(cfg); _seed(cfg.get('seed', 42)) 
+        E, L, B = cfg['n_embd'], cfg['n_layer'], cfg['block_size'] 
+        V = self.vocab_size 
+        sd = {'wte': self._mat(V, E), 'wpe': self._mat(B, E), 'lm_head': self._mat(V, E)} 
+        for i in range(L): 
+            for k in ('attn_wq','attn_wk','attn_wv','attn_wo'): 
+                sd[f'layer{i}.{k}'] = self._mat(E, E) 
+            sd[f'layer{i}.mlp_fc1'] = self._mat(4*E, E) 
+            sd[f'layer{i}.mlp_fc2'] = self._mat(E, 4*E) 
+        self.sd = sd 
+        self.params = [p for m in sd.values() for row in m for p in row] 
+        self.adam_m = np.zeros(len(self.params)) 
+        self.adam_v = np.zeros(len(self.params)) 
+        return len(self.params) 
+
+    # ── Forward ─────────────────────────────────────────────────────────────── 
+    def _forward(self, tok, pos, keys, vals): 
+        E, H, L, B = self.cfg['n_embd'], self.cfg['n_head'], self.cfg['n_layer'], self.cfg['block_size'] 
+        hd = E // H; sd = self.sd 
+        x = [sd['wte'][tok][i] + sd['wpe'][pos % B][i] for i in range(E)] 
+        x = rmsnorm(x) 
+        for li in range(L): 
+            xr = x; x = rmsnorm(x) 
+            q = linear(x, sd[f'layer{li}.attn_wq']) 
+            k = linear(x, sd[f'layer{li}.attn_wk']) 
+            v = linear(x, sd[f'layer{li}.attn_wv']) 
+            keys[li].append(k); vals[li].append(v) 
+            xa = [] 
+            for h in range(H): 
+                hs = h * hd 
+                qh = q[hs:hs+hd] 
+                kh = [ki[hs:hs+hd] for ki in keys[li]] 
+                vh = [vi[hs:hs+hd] for vi in vals[li]] 
+                al = [sum((qh[j]*kt[j] for j in range(hd)), Value(0)) / math.sqrt(hd) for kt in kh] 
+                aw = softmax(al) 
+                for j in range(hd): 
+                    xa.append(sum((aw[t]*vh[t][j] for t in range(len(vh))), Value(0))) 
+            x = linear(xa, sd[f'layer{li}.attn_wo']) 
+            x = [a+b for a,b in zip(x, xr)] 
+            xr2 = x; x = rmsnorm(x) 
+            x = linear(x, sd[f'layer{li}.mlp_fc1']) 
+            x = [xi.relu() for xi in x] 
+            x = linear(x, sd[f'layer{li}.mlp_fc2']) 
+            x = [a+b for a,b in zip(x, xr2)] 
+        return linear(x, sd['lm_head']) 
+
+    # ── Generate ────────────────────────────────────────────────────────────── 
+    def generate(self, prompt='', temperature=0.5, max_len=None): 
+        if max_len is None: max_len = self.cfg['block_size'] 
+        L = self.cfg['n_layer'] 
+        keys, vals = [[] for _ in range(L)], [[] for _ in range(L)] 
+
+        def _next(tok, pos): 
+            logits = self._forward(tok, pos, keys, vals) 
+            probs = softmax([l / temperature for l in logits]) 
+            return _sample([p.data for p in probs]) 
+
+        if prompt: 
+            tok = self.BOS 
+            logits = self._forward(tok, 0, keys, vals) 
+            for i, ch in enumerate(prompt): 
+                if ch in self.uchars: 
+                    tok = self.uchars.index(ch) 
+                    logits = self._forward(tok, i+1, keys, vals) 
+                    probs = softmax([l / temperature for l in logits]) 
+                    tok = _sample([p.data for p in probs]) 
+                if tok == self.BOS: return prompt or '(empty)' 
+            out = [prompt, self.uchars[tok]] 
+            for pos in range(len(prompt)+2, max_len): 
+                tok = _next(tok, pos-1) 
+                if tok == self.BOS: break 
+                out.append(self.uchars[tok]) 
+            return ''.join(out) 
+        else: 
+            tok = self.BOS; out = [] 
+            for pos in range(max_len): 
+                tok = _next(tok, pos) 
+                if tok == self.BOS: break 
+                out.append(self.uchars[tok]) 
+            return ''.join(out) or '(empty)' 
+
+    # ── Train step ──────────────────────────────────────────────────────────── 
+    def train_step(self, step, total_steps): 
+        B, L = self.cfg['block_size'], self.cfg['n_layer'] 
+        lr, b1, b2, eps = 0.01, 0.85, 0.99, 1e-8 
+        doc = self.docs[step % len(self.docs)] 
+        tokens = [self.BOS] + [self.uchars.index(c) for c in doc if c in self.uchars] + [self.BOS] 
+        n = min(B, len(tokens) - 1) 
+        keys, vals = [[] for _ in range(L)], [[] for _ in range(L)] 
+        losses = [] 
+        for pos in range(n): 
+            logits = self._forward(tokens[pos], pos, keys, vals) 
+            probs = softmax(logits) 
+            losses.append(-probs[tokens[pos+1]].log()) 
+        loss = sum(losses, Value(0)) / n 
+        loss.backward() 
+        lr_t = lr * (1 - step / total_steps) 
+        for i, p in enumerate(self.params): 
+            self.adam_m[i] = b1*self.adam_m[i] + (1-b1)*p.grad 
+            self.adam_v[i] = b2*self.adam_v[i] + (1-b2)*p.grad**2 
+            mh = self.adam_m[i] / (1 - b1**(step+1)) 
+            vh = self.adam_v[i] / (1 - b2**(step+1)) 
+            p.data -= lr_t * mh / (math.sqrt(vh) + eps) 
+            p.grad = 0.0 
+        return loss.data, lr_t, doc

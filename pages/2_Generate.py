@@ -1,79 +1,89 @@
-import random
-
 import streamlit as st
+from microgpt import MicroGPT
+from utils import inject_css, SAMPLE_COLORS
 
-from utils import SAMPLE_COLORS, inject_css
-
-st.set_page_config(layout="wide", page_icon="🧠", page_title="Generate")
+st.set_page_config(page_title="Generate · Train Your Own GPT", layout="wide", page_icon="✨")
 inject_css()
 
-st.title("✨ Generate")
+if not st.session_state.get("trained"):
+    st.markdown("""
+    <style>
+    [data-testid="stSidebarNav"] a[href*="Generate"] { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
-if not st.session_state.get("trained", False) or st.session_state.get("model") is None:
-    st.markdown(
-        """
-        <div class='card'>
-            <h3>Model not trained yet</h3>
-            <p>Go back to the training page, load a dataset, and train your model first.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.page_link("Train.py", label="⬅ Back to Train")
+st.markdown("""
+<div style='display:flex;align-items:center;gap:12px;margin-bottom:24px'>
+  <div style='font-size:28px;font-weight:800;color:#f1f5f9;letter-spacing:-0.5px'>✨ Generate</div>
+  <div style='font-size:11px;color:#64748b;background:#1e2535;padding:3px 10px;border-radius:20px;margin-top:4px'>
+    sample from your trained model
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+if not st.session_state.get("trained"):
+    st.markdown("""
+    <div class='card' style='text-align:center;padding:48px'>
+      <div style='font-size:40px;margin-bottom:12px'>⚡</div>
+      <div style='font-size:16px;font-weight:600;color:#94a3b8;margin-bottom:6px'>No trained model yet</div>
+      <div style='font-size:13px;color:#475569'>Go to the Training page first</div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.page_link("Train.py", label="← Back to Training", use_container_width=False)
     st.stop()
 
-samples = st.session_state.get("final_samples", [])
-if samples:
-    st.subheader("Training samples")
-    html = ""
-    for i, s in enumerate(samples):
-        color = SAMPLE_COLORS[i % len(SAMPLE_COLORS)]
-        html += f"<span class='pill' style='color:{color}; border:1px solid {color}; background:{color}22'>{s}</span>"
-    st.markdown(html, unsafe_allow_html=True)
+# ── Training samples ──────────────────────────────────────────────────────────
+if st.session_state.final_samples:
+    st.markdown("<div style='font-size:11px;font-weight:600;color:#64748b;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px'>Training Samples</div>", unsafe_allow_html=True)
+    pills = "".join(
+        f"<span style='font-family:JetBrains Mono,monospace;color:{SAMPLE_COLORS[i%6]};"
+        f"font-weight:600;background:{SAMPLE_COLORS[i%6]}18;padding:4px 12px;"
+        f"border-radius:20px;display:inline-block;margin:3px 4px 3px 0;font-size:14px'>{s}</span>"
+        for i, s in enumerate(st.session_state.final_samples[:8])
+    )
+    st.markdown(f"<div style='margin-bottom:24px'>{pills}</div>", unsafe_allow_html=True)
+    st.divider()
 
-left, right = st.columns([1, 1.35])
+# ── Controls ──────────────────────────────────────────────────────────────────
+col_ctrl, col_results = st.columns([1, 2], gap="large")
 
-with left:
-    st.subheader("Settings")
-    prompt = st.text_input("Prompt", value="")
-    temp = st.slider("Temperature", 0.1, 1.5, 0.9, 0.05)
-    count = st.slider("Count", 1, 20, 5)
+with col_ctrl:
+    st.markdown("<div class='card-title'>⚙️ Settings</div>", unsafe_allow_html=True)
+    prompt = st.text_input("Prompt", placeholder="type a beginning… (optional)")
+    temperature = st.slider("Temperature", 0.1, 1.5, 0.8, step=0.1)
+    count = st.slider("Count", 1, 20, 8)
 
-    qp_cols = st.columns(3)
-    quicks = ["random", "ka", "em", "ch", "j", "al"]
-    for i, q in enumerate(quicks):
-        if qp_cols[i % 3].button(q, use_container_width=True):
-            if q == "random":
-                prompt = random.choice(["a", "b", "c", "d", "e"])
-            else:
-                prompt = q
-            st.session_state["quick_prompt"] = prompt
+    generate = st.button("→ Generate", type="primary", use_container_width=True)
 
-    if "quick_prompt" in st.session_state:
-        prompt = st.session_state["quick_prompt"]
+    st.divider()
+    st.markdown("<div style='font-size:11px;font-weight:600;color:#64748b;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px'>Quick Prompts</div>", unsafe_allow_html=True)
+    qcols = st.columns(3)
+    quick_prompt = None
+    for i, pr in enumerate(['', 'ka', 'em', 'ch', 'j', 'al']):
+        with qcols[i % 3]:
+            if st.button(f'"{pr}…"' if pr else "random", key=f"qp_{i}"):
+                quick_prompt = pr
 
-    do_generate = st.button("Generate", type="primary", use_container_width=True)
-    st.page_link("Train.py", label="⬅ Back to Train")
+    st.divider()
+    st.page_link("Train.py", label="← Back to Training")
 
-with right:
-    st.subheader("Results")
-    if do_generate:
-        model = st.session_state.model
-        results = []
-        for _ in range(count):
-            results.append(model.generate(prompt=prompt, temperature=temp, max_len=32))
-        st.session_state["gen_results"] = results
-        st.session_state["gen_prompt"] = prompt
+# ── Results ───────────────────────────────────────────────────────────────────
+with col_results:
+    st.markdown("<div class='card-title'>📄 Results</div>", unsafe_allow_html=True)
 
-    results = st.session_state.get("gen_results", [])
-    prompt_used = st.session_state.get("gen_prompt", prompt)
+    run_prompt = prompt if generate else (quick_prompt if quick_prompt is not None else None)
 
-    if results:
+    if run_prompt is not None or generate:
+        p = run_prompt if run_prompt is not None else prompt
+        model: MicroGPT = st.session_state.model
+        results = [model.generate(p, temperature) for _ in range(count)]
         for i, r in enumerate(results):
-            cls = "result-row first" if i == 0 else "result-row"
-            st.markdown(
-                f"<div class='{cls}'><span class='prompt'>{prompt_used}</span><span class='cont'>{r}</span></div>",
-                unsafe_allow_html=True,
-            )
+            if p and r.startswith(p):
+                body = (f"<span style='color:#60a5fa;font-weight:700'>{p}</span>"
+                        f"<span style='color:#4ade80;font-weight:600'>{r[len(p):]}</span>")
+            else:
+                body = f"<span style='color:#4ade80'>{r}</span>"
+            cls = "top" if i == 0 else "rest"
+            st.markdown(f"<div class='result-row {cls}'>{body}</div>", unsafe_allow_html=True)
     else:
-        st.caption("No generations yet — choose settings and click Generate.")
+        st.markdown("<div style='color:#475569;font-size:13px;padding:16px 0'>Hit Generate to see results here.</div>", unsafe_allow_html=True)
