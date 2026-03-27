@@ -2,6 +2,9 @@
 
 A Streamlit app to train a tiny **character-level GPT** model and generate text from it.
 
+> This project is based on Andrej Karpathy's microgpt work:
+> https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95
+
 ## Features
 - Pure-Python scalar autograd + GPT blocks (`microgpt.py`)
 - Interactive training controls
