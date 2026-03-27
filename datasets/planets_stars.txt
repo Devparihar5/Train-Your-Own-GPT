@@ -1,0 +1,72 @@
+Mercury
+Venus
+Earth
+Mars
+Jupiter
+Saturn
+Uranus
+Neptune
+Pluto
+Sun
+Moon
+Sirius
+Canopus
+Arcturus
+Vega
+Capella
+Rigel
+Procyon
+Achernar
+Betelgeuse
+Hadar
+Altair
+Aldebaran
+Antares
+Spica
+Pollux
+Fomalhaut
+Deneb
+Regulus
+Adhara
+Castor
+Gacrux
+Bellatrix
+Elnath
+Miaplacidus
+Alnilam
+Alnair
+Alioth
+Dubhe
+Mirfak
+Wezen
+Sargas
+Kaus Australis
+Avior
+Alkaid
+Menkalinan
+Atria
+Alhena
+Peacock
+Alsephina
+Mirzam
+Polaris
+Barnards Star
+Proxima Centauri
+Alpha Centauri
+Tau Ceti
+Luytens Star
+TRAPPIST-1
+Kepler-22b
+Kepler-186f
+Gliese 581g
+Ross 128 b
+TOI-700 d
+Europa
+Ganymede
+Callisto
+Titan
+Enceladus
+Triton
+Io
+Ceres
+Eris
